@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Pulveris control</title>
+  <style>
+    :root { color-scheme: dark; font: 16px system-ui, sans-serif; background: #10191c; color: #e8f1ef; }
+    body { margin: 0 auto; padding: 20px; max-width: 1200px; }
+    header { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; }
+    h1 { font-size: 1.55rem; margin: 0 0 20px; } h2 { font-size: 1.1rem; margin: 0 0 12px; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px); gap: 16px; }
+    section { background: #1c292c; padding: 18px; border-radius: 12px; margin-bottom: 16px; }
+    img { display: block; background: #090f10; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; border-radius: 8px; }
+    button, input, select { font: inherit; color: inherit; background: #26383b; border: 1px solid #587276; border-radius: 7px; padding: 9px; }
+    button { cursor: pointer; touch-action: none; } button:hover { background: #355256; } button:disabled { opacity: .45; cursor: default; }
+    button.primary { background: #0c725f; } button.stop { background: #8e3b3b; }
+    .controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .controls button { min-height: 54px; } .wide { grid-column: 1 / -1; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    label { display: flex; flex-direction: column; gap: 4px; font-size: .86rem; color: #bbd0cc; }
+    label.check { flex-direction: row; align-items: center; }
+    input[type=number] { width: 100%; box-sizing: border-box; }
+    p, small { color: #bbd0cc; line-height: 1.4; } #message { min-height: 1.4em; color: #ffd8a1; }
+    #status { font-variant-numeric: tabular-nums; }
+    @media (max-width: 720px) { .layout { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header><h1>Pulveris</h1><span id="connection">Connecting…</span></header>
+  <div class="layout">
+    <main>
+      <section><h2>Camera</h2><img src="/stream" alt="Live camera stream"><p id="status">Waiting for the controller…</p></section>
+      <section>
+        <h2>Motor control</h2>
+        <div class="row"><button class="primary" id="remote">Take remote control</button><button id="physical">Use physical controls</button></div>
+        <p>Hold a direction button or arrow key to move. Releasing it or losing the connection stops remote motion. Stop also takes remote control. Switching to physical controls can start motion if an input is already high.</p>
+        <div class="controls">
+          <span></span><button data-direction="forward" disabled>▲ Forward</button><span></span>
+          <button data-direction="left" disabled>◀ Left</button><button class="stop" id="stop">Stop</button><button data-direction="right" disabled>Right ▶</button>
+          <span></span><button data-direction="backward" disabled>▼ Backward</button><span></span>
+        </div>
+        <p>Remote steering drives directly; line following and its line-loss stop apply in physical mode. A live camera is required in both modes.</p>
+      </section>
+    </main>
+    <aside><section>
+      <h2>Live tuning</h2><p>Changes apply and are saved when you select Save.</p>
+      <form id="settings"><div class="fields" id="fields"></div><p><button class="primary" type="submit">Save settings</button></p></form>
+      <div id="message" role="status"></div>
+    </section></aside>
+  </div>
+  <script>
+    const newId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+    let client = newId();
+    const labels = {threshold:'Threshold', contrast:'Contrast', max_line_width:'Max line width', smoothing:'Smoothing (s)', roi_start:'Road region start', roi_top_width:'Road top width', roi_bottom_width:'Road bottom width', min_fraction:'Min line fraction', max_fraction:'Max line fraction', speed:'Speed', kp:'Kp', ki:'Ki', kd:'Kd', ramp_rate:'Ramp rate', timeout:'Camera timeout (s)'};
+    let sequence = 0, held = null, gesture = null, owner = false, initialized = false;
+    const message = text => document.querySelector('#message').textContent = text;
+    async function post(path, data) {
+      const response = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Request failed');
+      return result;
+    }
+    function controls() { document.querySelectorAll('[data-direction]').forEach(button => button.disabled = !owner); }
+    function send(direction, currentGesture) {
+      post('/api/control', {client, sequence: ++sequence, direction, gesture:currentGesture}).catch(error => {
+        held = null; controls(); message(error.message);
+      });
+    }
+    function release() {
+      if (held && gesture) { const previous = gesture; held = null; gesture = null; send('stop', previous); }
+    }
+    function press(direction) {
+      if (!owner || held) return;
+      held = direction; gesture = newId();
+      send(held, gesture);
+    }
+    setInterval(() => { if (held && gesture) send(held, gesture); }, 150);
+    document.querySelectorAll('[data-direction]').forEach(button => {
+      button.addEventListener('pointerdown', event => { event.preventDefault(); button.setPointerCapture(event.pointerId); press(button.dataset.direction); });
+      button.addEventListener('pointerup', release); button.addEventListener('pointercancel', release); button.addEventListener('lostpointercapture', release);
+    });
+    const keys = {ArrowUp:'forward', ArrowDown:'backward', ArrowLeft:'left', ArrowRight:'right'};
+    window.addEventListener('keydown', event => { if (keys[event.key] && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { event.preventDefault(); press(keys[event.key]); } });
+    window.addEventListener('keyup', event => { if (keys[event.key] === held) release(); });
+    window.addEventListener('blur', release);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) release(); });
+    document.querySelector('#stop').addEventListener('click', () => setMode('remote'));
+    async function setMode(mode) {
+      release();
+      if (mode === 'remote') client = newId();
+      try { await post('/api/mode', {mode, client}); owner = mode === 'remote'; controls(); message(owner ? 'Remote control active.' : 'Physical controls active.'); }
+      catch (error) { owner = false; controls(); message(error.message); }
+    }
+    document.querySelector('#remote').onclick = () => setMode('remote');
+    document.querySelector('#physical').onclick = () => setMode('physical');
+    function setup(settings, limits) {
+      const fields = document.querySelector('#fields');
+      for (const [name, [min, max, step]] of Object.entries(limits)) {
+        const label = document.createElement('label'); label.textContent = labels[name] || name;
+        const input = document.createElement('input'); Object.assign(input, {type:'number', name, min, step:step === 1 ? 1 : 'any', value:settings[name], required:true});
+        if (max !== null) input.max = max;
+        label.append(input); fields.append(label);
+      }
+      const label = document.createElement('label'); label.className = 'check wide';
+      const input = document.createElement('input'); Object.assign(input, {type:'checkbox', name:'light_line', checked:settings.light_line});
+      label.append(input, ' Follow a light line'); fields.append(label);
+    }
+    document.querySelector('#settings').onsubmit = async event => {
+      event.preventDefault();
+      const values = {};
+      for (const input of event.currentTarget.querySelectorAll('input')) values[input.name] = input.type === 'checkbox' ? input.checked : Number(input.value);
+      try { await post('/api/settings', values); message('Settings saved.'); }
+      catch (error) { message(error.message); }
+    };
+    async function poll() {
+      try {
+        const response = await fetch('/api/state', {cache:'no-store'}); if (!response.ok) throw new Error('Connection failed');
+        const data = await response.json();
+        if (!initialized) { setup(data.settings, data.limits); initialized = true; }
+        if (data.mode !== 'remote') { owner = false; controls(); }
+        const s = data.status;
+        document.querySelector('#connection').textContent = `Connected · ${data.mode} control`;
+        const performance = s.fps == null ? '' : ` · ${s.resolution.join('×')} · ${s.fps.toFixed(1)} fps · ${s.processing_ms.toFixed(1)} ms`;
+        document.querySelector('#status').textContent = `Mode: ${s.mode || 'starting'} · Line: ${s.error == null ? 'not detected' : s.error.toFixed(2)} · Motors: ${(s.left || 0).toFixed(2)}, ${(s.right || 0).toFixed(2)}${performance}`;
+      } catch (error) { release(); owner = false; controls(); document.querySelector('#connection').textContent = 'Disconnected'; }
+    }
+    poll(); setInterval(poll, 1000);
+  </script>
+</body>
+</html>
