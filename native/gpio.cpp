@@ -10,7 +10,7 @@
 namespace {
 unsigned int offset(int pin) {
     switch (pin) {
-        case 3: return 12; case 5: return 11; case 11: return 0; case 12: return 6;
+        case 3: return 12; case 5: return 11; case 7: return 203; case 11: return 0; case 12: return 6;
         case 13: return 2; case 15: return 3; case 22: return 1;
         default: throw std::invalid_argument("Unsupported GPIO pin");
     }
@@ -47,20 +47,21 @@ public:
 }
 
 struct Inputs::Impl {
-    explicit Impl(const std::array<int, 2> &pins)
-        : lines({offset(pins[0]), offset(pins[1])}, false, "pulveris-inputs") {}
+    explicit Impl(const std::array<int, 2> &pins, int tape_pin)
+        : lines({offset(pins[0]), offset(pins[1]), offset(tape_pin)}, false, "pulveris-inputs") {}
     Lines lines;
     std::array<DebouncedInput, 2> debounce;
 };
 
-Inputs::Inputs(const std::array<int, 2> &pins) : impl(std::make_unique<Impl>(pins)) {}
+Inputs::Inputs(const std::array<int, 2> &pins, int tape_pin) : impl(std::make_unique<Impl>(pins, tape_pin)) {}
 Inputs::~Inputs() = default;
-std::pair<bool, bool> Inputs::read() {
-    std::array<gpiod_line_value, 2> values{};
+InputValues Inputs::read() {
+    std::array<gpiod_line_value, 3> values{};
     if (gpiod_line_request_get_values(impl->lines.request, values.data()) < 0) throw gpio_error("Read GPIO inputs");
     double timestamp = now();
     return {impl->debounce[0].update(values[0] == GPIOD_LINE_VALUE_ACTIVE, timestamp),
-            impl->debounce[1].update(values[1] == GPIOD_LINE_VALUE_ACTIVE, timestamp)};
+            impl->debounce[1].update(values[1] == GPIOD_LINE_VALUE_ACTIVE, timestamp),
+            values[2] == GPIOD_LINE_VALUE_ACTIVE};
 }
 
 struct Motors::Impl {

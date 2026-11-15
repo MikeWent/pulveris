@@ -15,7 +15,7 @@ void handle_signal(int) { stop_requested = 1; }
 struct Options {
     Settings settings;
     std::string camera = "/dev/video0", config = "pulveris.json", host = "0.0.0.0", token = ".web-token";
-    int frequency = 100, port = 8080, enable_pin = 5;
+    int frequency = 100, port = 8080, enable_pin = 5, tape_pin = 7;
     std::array<int, 4> pins{11, 13, 15, 12};
     std::array<int, 2> inputs{22, 3};
     bool web = false, dry_run = false, dry_inputs = false;
@@ -45,7 +45,7 @@ Options parse_options(int argc, char **argv) {
         std::string arg = argv[i];
         if (arg == "--help") {
             std::cout << "Usage: pulveris [--camera DEVICE] [--width N] [--height N] [--web] [--dry-run] [options]\n"
-                         "Control: --pins L_BACK L_FWD R_BACK R_FWD --input-pins FORWARD BACKWARD --enable-pin PIN\n"
+                         "Control: --pins L_BACK L_FWD R_BACK R_FWD --input-pins FORWARD BACKWARD --enable-pin PIN --tape-pin PIN\n"
                          "Tuning: --threshold --contrast --max-line-width --smoothing --light-line --roi-start\n"
                          "        --roi-top-width --roi-bottom-width --min-fraction --max-fraction --speed\n"
                          "        --kp --ki --kd --ramp-rate --pwm-hz --timeout\n"
@@ -62,6 +62,7 @@ Options parse_options(int argc, char **argv) {
         else if (arg == "--pwm-hz") result.frequency = integer(next(i));
         else if (arg == "--web-port") result.port = integer(next(i));
         else if (arg == "--enable-pin") result.enable_pin = integer(next(i));
+        else if (arg == "--tape-pin") result.tape_pin = integer(next(i));
         else if (arg == "--pins") for (auto &pin : result.pins) pin = integer(next(i));
         else if (arg == "--input-pins") for (auto &pin : result.inputs) pin = integer(next(i));
         else if (arg == "--web") result.web = true;
@@ -78,12 +79,12 @@ Options parse_options(int argc, char **argv) {
         }
     }
     validate(result.settings);
-    const std::set<int> allowed{3, 5, 11, 12, 13, 15, 22};
+    const std::set<int> allowed{3, 5, 7, 11, 12, 13, 15, 22};
     std::set<int> used(result.pins.begin(), result.pins.end());
-    used.insert(result.inputs.begin(), result.inputs.end()); used.insert(result.enable_pin);
+    used.insert(result.inputs.begin(), result.inputs.end()); used.insert(result.enable_pin); used.insert(result.tape_pin);
     if (result.frequency < 20 || result.frequency > 1000 ||
         result.port < 1 || result.port > 65535 || used != allowed || (result.dry_inputs && !result.dry_run))
-        throw std::invalid_argument("Invalid settings or pins; choose seven distinct pins from 3, 5, 11, 12, 13, 15, 22");
+        throw std::invalid_argument("Invalid settings or pins; choose eight distinct pins from 3, 5, 7, 11, 12, 13, 15, 22");
     return result;
 }
 
@@ -193,7 +194,7 @@ int run(const Options &options) {
             server = std::make_unique<WebServer>(shared, options.host, options.port, options.token, "web.html");
             std::cout << "Web interface listening on " << options.host << ':' << options.port << "; token file: " << options.token << std::endl;
         }
-        if (!options.dry_run || options.dry_inputs) inputs = std::make_unique<Inputs>(options.inputs);
+        if (!options.dry_run || options.dry_inputs) inputs = std::make_unique<Inputs>(options.inputs, options.tape_pin);
         if (!options.dry_run) motors = std::make_unique<Motors>(options.pins, options.frequency, options.enable_pin);
         camera = std::make_unique<Camera>(options.camera, static_cast<int>(shared.settings.camera_width),
                                           static_cast<int>(shared.settings.camera_height));
@@ -201,6 +202,7 @@ int run(const Options &options) {
         Motion motion;
         std::string previous_mode = snapshot(shared).mode;
         std::optional<double> previous_time, filtered, error;
+        std::optional<bool> previous_polarity;
         std::pair<double, double> target{0, 0};
         double turn = 0, started = now(), last_update = started;
         std::uint64_t last_sequence = 0;
@@ -219,7 +221,15 @@ int run(const Options &options) {
         };
         while (!stop_requested) {
             auto control = snapshot(shared);
-            const auto &settings = control.settings;
+            auto settings = control.settings;
+            auto physical = inputs ? inputs->read() : InputValues{true, false, !settings.light_line};
+            if (inputs) settings.light_line = !physical.dark_line;
+            if (previous_polarity && *previous_polarity != settings.light_line) {
+                if (motors) motors->drive(0, 0);
+                motion.stop(); pid.reset(); previous_time.reset(); filtered.reset(); error.reset();
+                target = {0, 0}; turn = 0;
+            }
+            previous_polarity = settings.light_line;
             if (control.mode != previous_mode) {
                 if (motors) motors->drive(0, 0);
                 motion.stop(); pid.reset(); previous_time.reset(); filtered.reset(); previous_mode = control.mode;
@@ -262,8 +272,7 @@ int run(const Options &options) {
                     target = {clamp(settings.speed + turn, -1, 1), clamp(settings.speed - turn, -1, 1)};
                 }
             }
-            auto physical = inputs ? inputs->read() : std::make_pair(true, false);
-            bool forward = physical.first, backward = physical.second;
+            bool forward = physical.forward, backward = physical.backward;
             if (!forward || backward) { pid.reset(); previous_time.reset(); filtered.reset(); }
             double update_time = now();
             if (update_time - latest.timestamp > settings.timeout) { stop_for_camera("camera timeout"); continue; }

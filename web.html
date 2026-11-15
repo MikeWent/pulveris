@@ -114,7 +114,7 @@
       }
       const label = document.createElement('label'); label.className = 'check wide';
       const input = document.createElement('input'); Object.assign(input, {type:'checkbox', name:'light_line', checked:settings.light_line});
-      label.append(input, ' Follow a light line'); fields.append(label);
+      label.append(input, ' Follow a light line (dry-run without GPIO only)'); fields.append(label);
     }
     document.querySelector('#settings').onsubmit = async event => {
       event.preventDefault();

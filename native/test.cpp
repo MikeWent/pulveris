@@ -10,6 +10,7 @@
 int main(int argc, char **argv) {
     Settings settings;
     if (argc > 1) {
+        settings.light_line = false;
         cv::Mat image = cv::imread(argv[1], cv::IMREAD_COLOR);
         if (image.empty()) { std::cerr << "Cannot open image\n"; return 1; }
         settings.threshold = 160; settings.roi_top_width = 1;
@@ -22,8 +23,14 @@ int main(int argc, char **argv) {
                   << " mean_ms=" << (now() - start) * 10 << '\n';
         return 0;
     }
-    cv::Mat image(100, 100, CV_8UC3, cv::Scalar(255, 255, 255));
+    assert(settings.light_line);
+    cv::Mat image(100, 100, CV_8UC3, cv::Scalar(0, 0, 0));
     settings.roi_start = .6; settings.roi_top_width = 1;
+    cv::rectangle(image, {70, 60}, {79, 99}, cv::Scalar(255, 255, 255), cv::FILLED);
+    auto white = detect_line(image, settings);
+    assert(white.found && white.error > .4);
+    settings.light_line = false;
+    image.setTo(cv::Scalar(255, 255, 255));
     cv::rectangle(image, {70, 60}, {79, 99}, cv::Scalar(0, 0, 0), cv::FILLED);
     auto right = detect_line(image, settings, true);
     assert(right.found && right.error > .4 && !right.selected.empty() && !right.outline.empty());

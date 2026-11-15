@@ -28,7 +28,7 @@ struct Settings {
     double roi_start = .5, roi_top_width = .6, roi_bottom_width = 1;
     double min_fraction = .01, max_fraction = .6, speed = .3;
     double kp = .5, ki = 0, kd = .05, ramp_rate = .6, timeout = .5;
-    bool light_line = false;
+    bool light_line = true;
 };
 
 struct SettingSpec {
@@ -98,13 +98,15 @@ struct Snapshot {
 };
 Snapshot snapshot(const Shared &shared);
 
+struct InputValues { bool forward, backward, dark_line; };
+
 class Inputs {
 public:
-    explicit Inputs(const std::array<int, 2> &pins);
+    explicit Inputs(const std::array<int, 2> &pins, int tape_pin);
     ~Inputs();
     Inputs(const Inputs &) = delete;
     Inputs &operator=(const Inputs &) = delete;
-    std::pair<bool, bool> read();
+    InputValues read();
 private:
     struct Impl;
     std::unique_ptr<Impl> impl;
