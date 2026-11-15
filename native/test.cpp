@@ -1,5 +1,6 @@
 #include "core.hpp"
 #include "debounce.hpp"
+#include "blink.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -59,6 +60,15 @@ int main(int argc, char **argv) {
     assert(scaled.found && scaled.processing_width == 320 && scaled.processing_height == 180);
     assert(scaled.point.x > 850 && scaled.point.x < 1100 && scaled.polygon.front().y >= 140 && scaled.polygon.front().y <= 150);
     assert(!scaled.outline.empty());
+
+    ErrorBlink blink;
+    assert(!blink.update(false, 1));
+    assert(blink.update(true, 2));
+    assert(blink.update(true, 2.49));
+    assert(!blink.update(true, 2.5));
+    assert(blink.update(true, 3));
+    assert(!blink.update(false, 3.1));
+    assert(blink.update(true, 3.2)); // A new error starts with the LED on.
 
     DebouncedInput forward, backward;
     assert(!forward.update(true, 1.0));

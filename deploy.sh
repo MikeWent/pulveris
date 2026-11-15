@@ -71,7 +71,6 @@ User=dietpi
 SupplementaryGroups=video gpio
 ExecStartPre=+/usr/bin/chgrp gpio /dev/gpiochip0
 ExecStartPre=+/usr/bin/chmod g+rw /dev/gpiochip0
-ExecStartPre=/bin/sh -c "until test -e $camera; do sleep 1; done"
 WorkingDirectory=$HOME/pulveris
 ExecStart=$HOME/pulveris/pulveris --camera "$camera" --web
 

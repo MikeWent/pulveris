@@ -15,9 +15,9 @@ void handle_signal(int) { stop_requested = 1; }
 struct Options {
     Settings settings;
     std::string camera = "/dev/video0", config = "pulveris.json", host = "0.0.0.0", token = ".web-token";
-    int frequency = 100, port = 8080, enable_pin = 5, tape_pin = 7;
+    int frequency = 100, port = 8080, enable_pin = 5, tape_pin = 7, error_led_pin = 23;
     std::array<int, 4> pins{11, 13, 15, 12};
-    std::array<int, 2> inputs{22, 3};
+    std::array<int, 2> inputs{22, 3}, led_pins{21, 19};
     bool web = false, dry_run = false, dry_inputs = false;
 };
 
@@ -45,7 +45,7 @@ Options parse_options(int argc, char **argv) {
         std::string arg = argv[i];
         if (arg == "--help") {
             std::cout << "Usage: pulveris [--camera DEVICE] [--width N] [--height N] [--web] [--dry-run] [options]\n"
-                         "Control: --pins L_BACK L_FWD R_BACK R_FWD --input-pins FORWARD BACKWARD --enable-pin PIN --tape-pin PIN\n"
+                         "Control: --pins L_BACK L_FWD R_BACK R_FWD --input-pins FORWARD BACKWARD --enable-pin PIN --tape-pin PIN --led-pins READY LINE --error-led-pin PIN\n"
                          "Tuning: --threshold --contrast --max-line-width --smoothing --light-line --roi-start\n"
                          "        --roi-top-width --roi-bottom-width --min-fraction --max-fraction --speed\n"
                          "        --kp --ki --kd --ramp-rate --pwm-hz --timeout\n"
@@ -63,8 +63,10 @@ Options parse_options(int argc, char **argv) {
         else if (arg == "--web-port") result.port = integer(next(i));
         else if (arg == "--enable-pin") result.enable_pin = integer(next(i));
         else if (arg == "--tape-pin") result.tape_pin = integer(next(i));
+        else if (arg == "--error-led-pin") result.error_led_pin = integer(next(i));
         else if (arg == "--pins") for (auto &pin : result.pins) pin = integer(next(i));
         else if (arg == "--input-pins") for (auto &pin : result.inputs) pin = integer(next(i));
+        else if (arg == "--led-pins") for (auto &pin : result.led_pins) pin = integer(next(i));
         else if (arg == "--web") result.web = true;
         else if (arg == "--dry-run") result.dry_run = true;
         else if (arg == "--dry-inputs") result.dry_inputs = true;
@@ -79,12 +81,13 @@ Options parse_options(int argc, char **argv) {
         }
     }
     validate(result.settings);
-    const std::set<int> allowed{3, 5, 7, 11, 12, 13, 15, 22};
+    const std::set<int> allowed{3, 5, 7, 11, 12, 13, 15, 19, 21, 22, 23};
     std::set<int> used(result.pins.begin(), result.pins.end());
-    used.insert(result.inputs.begin(), result.inputs.end()); used.insert(result.enable_pin); used.insert(result.tape_pin);
+    used.insert(result.inputs.begin(), result.inputs.end()); used.insert(result.led_pins.begin(), result.led_pins.end());
+    used.insert(result.enable_pin); used.insert(result.tape_pin); used.insert(result.error_led_pin);
     if (result.frequency < 20 || result.frequency > 1000 ||
         result.port < 1 || result.port > 65535 || used != allowed || (result.dry_inputs && !result.dry_run))
-        throw std::invalid_argument("Invalid settings or pins; choose eight distinct pins from 3, 5, 7, 11, 12, 13, 15, 22");
+        throw std::invalid_argument("Invalid settings or pins; choose eleven distinct pins from 3, 5, 7, 11, 12, 13, 15, 19, 21, 22, 23");
     return result;
 }
 
@@ -183,13 +186,17 @@ int run(const Options &options) {
     Shared shared;
     shared.settings = options.settings;
     shared.config_path = options.config;
-    load_settings(shared.settings, options.config);
     std::unique_ptr<WebServer> server;
     std::unique_ptr<Inputs> inputs;
+    std::unique_ptr<StatusLeds> leds;
     std::unique_ptr<Motors> motors;
     std::unique_ptr<Camera> camera;
     int exit_code = 0;
     try {
+        if (!options.dry_run || options.dry_inputs) {
+            leds = std::make_unique<StatusLeds>(std::array<int, 3>{options.led_pins[0], options.led_pins[1], options.error_led_pin});
+        }
+        load_settings(shared.settings, options.config);
         if (options.web) {
             server = std::make_unique<WebServer>(shared, options.host, options.port, options.token, "web.html");
             std::cout << "Web interface listening on " << options.host << ':' << options.port << "; token file: " << options.token << std::endl;
@@ -209,8 +216,9 @@ int run(const Options &options) {
         std::uint64_t generation = 1;
         double size_started = started;
         std::deque<double> frame_times;
-        auto stop_for_camera = [&](const char *mode) {
+        auto stop_for_camera = [&](const char *mode, bool camera_error = false) {
             if (motors) motors->drive(0, 0);
+            if (leds) leds->set(false, false, camera_error);
             motion.stop(); pid.reset(); previous_time.reset(); filtered.reset(); error.reset();
             target = {0, 0}; turn = 0; frame_times.clear();
             if (server) {
@@ -226,6 +234,7 @@ int run(const Options &options) {
             if (inputs) settings.light_line = !physical.dark_line;
             if (previous_polarity && *previous_polarity != settings.light_line) {
                 if (motors) motors->drive(0, 0);
+                if (leds) leds->set(false, false, false);
                 motion.stop(); pid.reset(); previous_time.reset(); filtered.reset(); error.reset();
                 target = {0, 0}; turn = 0;
             }
@@ -240,12 +249,13 @@ int run(const Options &options) {
             if (!latest.error.empty()) throw std::runtime_error(latest.error);
             double current = now();
             if (latest.generation != generation && latest.sequence) {
-                stop_for_camera(current - size_started > 5 ? "camera timeout" : "camera reconfiguring");
+                stop_for_camera(current - size_started > 5 ? "camera timeout" : "camera reconfiguring", current - size_started > 5);
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 continue;
             }
             if (!latest.sequence || current - latest.timestamp > settings.timeout) {
-                stop_for_camera(!latest.sequence && current - started < 5 ? "starting" : "camera timeout");
+                bool starting = !latest.sequence && current - started < 5;
+                stop_for_camera(starting ? "starting" : "camera timeout", !starting);
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 continue;
             }
@@ -260,7 +270,8 @@ int run(const Options &options) {
                 }
                 auto detection = detect_for_control(latest.image, settings, server != nullptr);
                 if (server) { std::lock_guard<std::mutex> lock(shared.mutex); shared.detection = detection; }
-                if (now() - latest.timestamp > settings.timeout) { stop_for_camera("camera timeout"); continue; }
+                if (now() - latest.timestamp > settings.timeout) { stop_for_camera("camera timeout", true); continue; }
+                if (leds) leds->set(true, detection.found, false);
                 if (!detection.found) {
                     error.reset(); turn = 0; target = {0, 0}; pid.reset(); previous_time.reset(); filtered.reset();
                 } else {
@@ -275,7 +286,7 @@ int run(const Options &options) {
             bool forward = physical.forward, backward = physical.backward;
             if (!forward || backward) { pid.reset(); previous_time.reset(); filtered.reset(); }
             double update_time = now();
-            if (update_time - latest.timestamp > settings.timeout) { stop_for_camera("camera timeout"); continue; }
+            if (update_time - latest.timestamp > settings.timeout) { stop_for_camera("camera timeout", true); continue; }
             auto updated = snapshot(shared);
             if (updated.mode != control.mode) {
                 if (motors) motors->drive(0, 0);
@@ -318,8 +329,24 @@ int run(const Options &options) {
     } catch (const std::exception &error) {
         std::cerr << "Error: " << error.what() << std::endl;
         exit_code = 1;
+        motors.reset(); inputs.reset(); camera.reset();
+        if (server) {
+            std::lock_guard<std::mutex> lock(shared.mutex);
+            shared.status.mode = "error"; shared.status.left = shared.status.right = 0;
+            shared.status.error.reset(); shared.status.turn = 0; shared.status.fps.reset(); shared.detection = {};
+        }
+        if (leds) {
+            try {
+                while (!stop_requested) {
+                    leds->set(false, false, true);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+            } catch (const std::exception &led_error) {
+                std::cerr << "Error setting fault LED: " << led_error.what() << std::endl;
+            }
+        }
     }
-    motors.reset(); inputs.reset(); camera.reset(); server.reset();
+    motors.reset(); leds.reset(); inputs.reset(); camera.reset(); server.reset();
     return exit_code;
 }
 }

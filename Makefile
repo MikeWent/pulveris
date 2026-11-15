@@ -16,7 +16,7 @@ pulveris: $(OBJECTS)
 native/%.o: native/%.cpp native/core.hpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
-native/gpio.o native/test.o: native/debounce.hpp
+native/gpio.o native/test.o: native/debounce.hpp native/blink.hpp
 
 # The HTTP/JSON headers are expensive to optimize on a 256 MB NanoPi.
 native/web.o native/api.o native/web_test.o: CXXFLAGS += -O0

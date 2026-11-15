@@ -112,6 +112,18 @@ private:
     std::unique_ptr<Impl> impl;
 };
 
+class StatusLeds {
+public:
+    explicit StatusLeds(const std::array<int, 3> &pins);
+    ~StatusLeds();
+    StatusLeds(const StatusLeds &) = delete;
+    StatusLeds &operator=(const StatusLeds &) = delete;
+    void set(bool ready, bool line, bool error);
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl;
+};
+
 class Motors {
 public:
     Motors(const std::array<int, 4> &pins, int frequency, int enable_pin);

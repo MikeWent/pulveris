@@ -1,5 +1,6 @@
 #include "core.hpp"
 #include "debounce.hpp"
+#include "blink.hpp"
 
 #include <cerrno>
 #include <cstring>
@@ -11,7 +12,7 @@ namespace {
 unsigned int offset(int pin) {
     switch (pin) {
         case 3: return 12; case 5: return 11; case 7: return 203; case 11: return 0; case 12: return 6;
-        case 13: return 2; case 15: return 3; case 22: return 1;
+        case 13: return 2; case 15: return 3; case 19: return 64; case 21: return 65; case 22: return 1; case 23: return 66;
         default: throw std::invalid_argument("Unsupported GPIO pin");
     }
 }
@@ -63,6 +64,32 @@ InputValues Inputs::read() {
             impl->debounce[1].update(values[1] == GPIOD_LINE_VALUE_ACTIVE, timestamp),
             values[2] == GPIOD_LINE_VALUE_ACTIVE};
 }
+
+struct StatusLeds::Impl {
+    explicit Impl(const std::array<int, 3> &pins)
+        : lines({offset(pins[0]), offset(pins[1]), offset(pins[2])}, true, "pulveris-status") {}
+    ~Impl() {
+        try { set(false, false, false); }
+        catch (const std::exception &e) { std::cerr << "Status LED shutdown: " << e.what() << '\n'; }
+    }
+    void set(bool ready, bool line, bool error) {
+        bool error_on = blink.update(error, now());
+        std::array<gpiod_line_value, 3> values{
+            ready ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE,
+            line ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE,
+            error_on ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE};
+        if (values == previous) return;
+        if (gpiod_line_request_set_values(lines.request, values.data()) < 0) throw gpio_error("Write status LEDs");
+        previous = values;
+    }
+    Lines lines;
+    ErrorBlink blink;
+    std::array<gpiod_line_value, 3> previous{GPIOD_LINE_VALUE_INACTIVE, GPIOD_LINE_VALUE_INACTIVE, GPIOD_LINE_VALUE_INACTIVE};
+};
+
+StatusLeds::StatusLeds(const std::array<int, 3> &pins) : impl(std::make_unique<Impl>(pins)) {}
+StatusLeds::~StatusLeds() = default;
+void StatusLeds::set(bool ready, bool line, bool error) { impl->set(ready, line, error); }
 
 struct Motors::Impl {
     Impl(const std::array<int, 4> &pins, int frequency, int enable)
