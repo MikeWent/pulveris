@@ -12,6 +12,7 @@
     .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px); gap: 16px; }
     section { background: #1c292c; padding: 18px; border-radius: 12px; margin-bottom: 16px; }
     img { display: block; background: #090f10; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; border-radius: 8px; }
+    .camera-view { position: relative; } .camera-view canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
     button, input, select { font: inherit; color: inherit; background: #26383b; border: 1px solid #587276; border-radius: 7px; padding: 9px; }
     button { cursor: pointer; touch-action: none; } button:hover { background: #355256; } button:disabled { opacity: .45; cursor: default; }
     button.primary { background: #0c725f; } button.stop { background: #8e3b3b; }
@@ -31,11 +32,11 @@
   <header><h1>Pulveris</h1><span id="connection">Connecting…</span></header>
   <div class="layout">
     <main>
-      <section><h2>Camera</h2><img src="/stream" alt="Live camera stream"><p id="status">Waiting for the controller…</p></section>
+      <section><h2>Camera</h2><div class="camera-view"><img src="/stream" alt="Live camera stream"><canvas id="overlay"></canvas></div><p id="status">Waiting for the controller…</p></section>
       <section>
         <h2>Motor control</h2>
         <div class="row"><button class="primary" id="remote">Take remote control</button><button id="physical">Use physical controls</button></div>
-        <p>Hold a direction button or arrow key to move. Releasing it or losing the connection stops remote motion. Stop also takes remote control. Switching to physical controls can start motion if an input is already high.</p>
+        <p>Hold a direction button or arrow key to move. Releasing it or losing the connection stops remote motion. Stop also takes remote control. Switching to physical controls can start motion if a relay contact is already closed.</p>
         <div class="controls">
           <span></span><button data-direction="forward" disabled>▲ Forward</button><span></span>
           <button data-direction="left" disabled>◀ Left</button><button class="stop" id="stop">Stop</button><button data-direction="right" disabled>Right ▶</button>
@@ -45,7 +46,7 @@
       </section>
     </main>
     <aside><section>
-      <h2>Live tuning</h2><p>Changes apply and are saved when you select Save.</p>
+      <h2>Live tuning</h2><p>Changes apply and are saved when you select Save. Changing resolution briefly stops the motors; motion can resume if a control is still held. The camera may select a different supported size.</p>
       <form id="settings"><div class="fields" id="fields"></div><p><button class="primary" type="submit">Save settings</button></p></form>
       <div id="message" role="status"></div>
     </section></aside>
@@ -97,7 +98,15 @@
     document.querySelector('#physical').onclick = () => setMode('physical');
     function setup(settings, limits) {
       const fields = document.querySelector('#fields');
+      const sizeLabel = document.createElement('label'); sizeLabel.className = 'wide'; sizeLabel.textContent = 'Camera resolution';
+      const size = document.createElement('select'); size.name = 'camera_resolution';
+      const selected = `${settings.camera_width}x${settings.camera_height}`;
+      const sizes = ['160x120', '176x144', '320x240', '352x288', '640x480', '1280x720'];
+      if (!sizes.includes(selected)) sizes.push(selected);
+      for (const value of sizes) size.add(new Option(value.replace('x', ' × '), value));
+      size.value = selected; sizeLabel.append(size); fields.append(sizeLabel);
       for (const [name, [min, max, step]] of Object.entries(limits)) {
+        if (name === 'camera_width' || name === 'camera_height') continue;
         const label = document.createElement('label'); label.textContent = labels[name] || name;
         const input = document.createElement('input'); Object.assign(input, {type:'number', name, min, step:step === 1 ? 1 : 'any', value:settings[name], required:true});
         if (max !== null) input.max = max;
@@ -111,9 +120,38 @@
       event.preventDefault();
       const values = {};
       for (const input of event.currentTarget.querySelectorAll('input')) values[input.name] = input.type === 'checkbox' ? input.checked : Number(input.value);
+      [values.camera_width, values.camera_height] = event.currentTarget.elements.camera_resolution.value.split('x').map(Number);
       try { await post('/api/settings', values); message('Settings saved.'); }
       catch (error) { message(error.message); }
     };
+    function drawOverlay(detection, status) {
+      const canvas = document.querySelector('#overlay'), rect = canvas.getBoundingClientRect();
+      const [width, height] = status.resolution;
+      canvas.width = Math.max(1, Math.round(rect.width * devicePixelRatio)); canvas.height = Math.max(1, Math.round(rect.height * devicePixelRatio));
+      const ctx = canvas.getContext('2d');
+      if (!width || !height || !detection) return;
+      const scale = Math.min(canvas.width / width, canvas.height / height);
+      ctx.translate((canvas.width - width * scale) / 2, (canvas.height - height * scale) / 2); ctx.scale(scale, scale);
+      ctx.lineWidth = Math.max(1, width / 180);
+      function shape(points, stroke, fill) {
+        if (!points || !points.length) return;
+        ctx.beginPath(); ctx.moveTo(...points[0]); for (const p of points.slice(1)) ctx.lineTo(...p); ctx.closePath();
+        if (fill) { ctx.fillStyle = fill; ctx.fill(); } ctx.strokeStyle = stroke; ctx.stroke();
+      }
+      function arrow(x1, y1, x2, y2, color) {
+        const angle = Math.atan2(y2-y1, x2-x1), size = Math.max(5, width / 28);
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+        ctx.moveTo(x2-size*Math.cos(angle-.5), y2-size*Math.sin(angle-.5)); ctx.lineTo(x2,y2); ctx.lineTo(x2-size*Math.cos(angle+.5), y2-size*Math.sin(angle+.5));
+        ctx.strokeStyle = color; ctx.stroke();
+      }
+      shape(detection.region, '#35e8ee'); shape(detection.outline, '#4dff72', 'rgba(40,255,80,.28)');
+      if (detection.point) {
+        const [x,y] = detection.point;
+        arrow(width/2, height-1, x, y, '#ff4545');
+        ctx.beginPath(); ctx.arc(x,y,Math.max(2,width/90),0,Math.PI*2); ctx.fillStyle='#ff4545'; ctx.fill();
+      }
+      arrow(width/2, height*.9, width/2 + (status.turn || 0)*width*.3, height*.9, '#fa4bff');
+    }
     async function poll() {
       try {
         const response = await fetch('/api/state', {cache:'no-store'}); if (!response.ok) throw new Error('Connection failed');
@@ -121,12 +159,15 @@
         if (!initialized) { setup(data.settings, data.limits); initialized = true; }
         if (data.mode !== 'remote') { owner = false; controls(); }
         const s = data.status;
+        drawOverlay(data.detection, s);
         document.querySelector('#connection').textContent = `Connected · ${data.mode} control`;
-        const performance = s.fps == null ? '' : ` · ${s.resolution.join('×')} · ${s.fps.toFixed(1)} fps · ${s.processing_ms.toFixed(1)} ms`;
+        const processing = data.detection?.processing_resolution;
+        const detectionSize = processing && processing[0] && (processing[0] !== s.resolution[0] || processing[1] !== s.resolution[1]) ? ` · detection ${processing.join('×')}` : '';
+        const performance = s.fps == null ? '' : ` · ${s.resolution.join('×')}${detectionSize} · ${s.fps.toFixed(1)} fps · ${s.processing_ms.toFixed(1)} ms`;
         document.querySelector('#status').textContent = `Mode: ${s.mode || 'starting'} · Line: ${s.error == null ? 'not detected' : s.error.toFixed(2)} · Motors: ${(s.left || 0).toFixed(2)}, ${(s.right || 0).toFixed(2)}${performance}`;
       } catch (error) { release(); owner = false; controls(); document.querySelector('#connection').textContent = 'Disconnected'; }
     }
-    poll(); setInterval(poll, 1000);
+    poll(); setInterval(poll, 250);
   </script>
 </body>
 </html>

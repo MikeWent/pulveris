@@ -3,3 +3,7 @@ __pycache__/
 *.py[cod]
 pulveris.json
 .web-token
+pulveris
+native-test
+native-web-test
+native/*.o
