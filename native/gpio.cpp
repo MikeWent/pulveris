@@ -74,6 +74,8 @@ struct StatusLeds::Impl {
     }
     void set(bool ready, bool line, bool error) {
         bool error_on = blink.update(error, now());
+        if (error) ready = line = false;
+        else if (line) ready = false;
         std::array<gpiod_line_value, 3> values{
             ready ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE,
             line ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE,

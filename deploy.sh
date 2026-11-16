@@ -17,6 +17,12 @@ ssh -t "$host" '
 set -eu
 cd "$HOME/pulveris"
 
+if sudo test -f /etc/systemd/system/pulveris.service.d/camera-wait.conf &&
+   sudo grep -q "until test -e" /etc/systemd/system/pulveris.service.d/camera-wait.conf; then
+    echo "Remove or disable the old camera-wait.conf override before deploying; it prevents the error LED from working." >&2
+    exit 1
+fi
+
 sudo systemctl show --property=Version >/dev/null
 for package in build-essential pkg-config libopencv-core-dev libopencv-imgproc-dev libopencv-imgcodecs-dev libopencv-videoio-dev libcpp-httplib-dev nlohmann-json3-dev libgpiod-dev; do
     if ! dpkg -s "$package" 2>/dev/null | grep -q "^Status: install ok installed$"; then
@@ -52,14 +58,6 @@ fi
 
 getent group gpio >/dev/null || sudo groupadd --system gpio
 
-camera=/dev/video0
-for device in /dev/v4l/by-id/*-video-index0; do
-    if [ -e "$device" ]; then
-        camera=$device
-        break
-    fi
-done
-
 sudo tee /etc/systemd/system/pulveris.service >/dev/null <<EOF
 [Unit]
 Description=Pulveris line follower
@@ -72,7 +70,7 @@ SupplementaryGroups=video gpio
 ExecStartPre=+/usr/bin/chgrp gpio /dev/gpiochip0
 ExecStartPre=+/usr/bin/chmod g+rw /dev/gpiochip0
 WorkingDirectory=$HOME/pulveris
-ExecStart=$HOME/pulveris/pulveris --camera "$camera" --web
+ExecStart=$HOME/pulveris/pulveris --camera auto --web
 
 [Install]
 WantedBy=multi-user.target

@@ -27,9 +27,10 @@ native-test: native/test.o native/vision.o native/control.o
 native-web-test: native/web_test.o native/web.o native/api.o native/control.o
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDLIBS)
 
-test: native-test native-web-test
+test: pulveris native-test native-web-test
 	./native-test
 	./native-web-test
+	python3 native/camera_recovery_test.py
 
 clean:
 	$(RM) pulveris pulveris.tmp native-test native-web-test native/*.o

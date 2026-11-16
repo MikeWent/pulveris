@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <csignal>
+#include <filesystem>
 #include <iostream>
 #include <set>
 #include <thread>
@@ -14,7 +15,7 @@ void handle_signal(int) { stop_requested = 1; }
 
 struct Options {
     Settings settings;
-    std::string camera = "/dev/video0", config = "pulveris.json", host = "0.0.0.0", token = ".web-token";
+    std::string camera = "auto", config = "pulveris.json", host = "0.0.0.0", token = ".web-token";
     int frequency = 100, port = 8080, enable_pin = 5, tape_pin = 7, error_led_pin = 23;
     std::array<int, 4> pins{11, 13, 15, 12};
     std::array<int, 2> inputs{22, 3}, led_pins{21, 19};
@@ -91,6 +92,21 @@ Options parse_options(int argc, char **argv) {
     return result;
 }
 
+std::string camera_device(const std::string &requested) {
+    if (requested != "auto") return requested;
+    namespace fs = std::filesystem;
+    std::vector<std::string> cameras;
+    std::error_code error;
+    for (fs::directory_iterator it("/dev/v4l/by-id", error), end; !error && it != end; it.increment(error)) {
+        auto name = it->path().filename().string();
+        const std::string suffix = "-video-index0";
+        std::error_code exists_error;
+        if (name.size() >= suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0 &&
+            fs::exists(it->path(), exists_error)) cameras.push_back(it->path().string());
+    }
+    return cameras.empty() ? "/dev/video0" : *std::min_element(cameras.begin(), cameras.end());
+}
+
 struct Frame {
     cv::Mat image;
     double timestamp = 0;
@@ -113,54 +129,71 @@ class Camera {
 public:
     Camera(const std::string &device, int width, int height) : data(std::make_shared<Data>(width, height)) {
         worker = std::thread([state = data, device, width, height] {
-            try {
-                bool physical_camera = device.rfind("/dev/", 0) == 0;
-                cv::VideoCapture camera(device, physical_camera ? cv::CAP_V4L2 : cv::CAP_ANY);
-                if (!camera.isOpened()) throw std::runtime_error("Cannot open camera " + device);
-                camera.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
-                camera.set(cv::CAP_PROP_FRAME_WIDTH, width);
-                camera.set(cv::CAP_PROP_FRAME_HEIGHT, height);
-                camera.set(cv::CAP_PROP_FPS, 30);
-                camera.set(cv::CAP_PROP_BUFFERSIZE, 1);
-                double file_fps = camera.get(cv::CAP_PROP_FPS);
-                if (!std::isfinite(file_fps) || file_fps < 1 || file_fps > 120) file_fps = 30;
-                auto next_frame = Clock::now();
-                std::uint64_t generation = 1;
-                while (!state->stop) {
-                    int requested_width, requested_height;
-                    std::uint64_t requested_generation;
-                    {
+            std::string previous_error;
+            while (!state->stop) {
+                try {
+                    std::string selected = camera_device(device);
+                    bool physical_camera = selected.rfind("/dev/", 0) == 0;
+                    cv::VideoCapture camera(selected, physical_camera ? cv::CAP_V4L2 : cv::CAP_ANY);
+                    if (!camera.isOpened()) throw std::runtime_error("Cannot open camera " + selected);
+                    camera.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
+                    camera.set(cv::CAP_PROP_FRAME_WIDTH, width);
+                    camera.set(cv::CAP_PROP_FRAME_HEIGHT, height);
+                    camera.set(cv::CAP_PROP_FPS, 30);
+                    camera.set(cv::CAP_PROP_BUFFERSIZE, 1);
+                    double file_fps = camera.get(cv::CAP_PROP_FPS);
+                    if (!std::isfinite(file_fps) || file_fps < 1 || file_fps > 120) file_fps = 30;
+                    auto next_frame = Clock::now();
+                    std::uint64_t generation = 1;
+                    while (!state->stop) {
+                        int requested_width, requested_height;
+                        std::uint64_t requested_generation;
+                        {
+                            std::lock_guard<std::mutex> lock(state->mutex);
+                            requested_width = state->width; requested_height = state->height;
+                            requested_generation = state->generation;
+                        }
+                        if (requested_generation != generation) {
+                            camera.set(cv::CAP_PROP_FRAME_WIDTH, requested_width);
+                            camera.set(cv::CAP_PROP_FRAME_HEIGHT, requested_height);
+                            camera.set(cv::CAP_PROP_FPS, 30);
+                            generation = requested_generation;
+                        }
+                        if (!physical_camera) {
+                            std::this_thread::sleep_until(next_frame);
+                            next_frame += std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1 / file_fps));
+                        }
+                        cv::Mat frame;
+                        if (!camera.read(frame) || frame.empty()) throw std::runtime_error("Camera read failed: " + selected);
+                        double timestamp = now();
+                        if (!previous_error.empty()) {
+                            std::cout << "Camera reconnected: " << selected << std::endl;
+                            previous_error.clear();
+                        }
                         std::lock_guard<std::mutex> lock(state->mutex);
-                        requested_width = state->width; requested_height = state->height;
-                        requested_generation = state->generation;
+                        state->latest.image = frame; state->latest.timestamp = timestamp;
+                        state->latest.generation = generation; state->latest.error.clear(); ++state->latest.sequence;
                     }
-                    if (requested_generation != generation) {
-                        camera.set(cv::CAP_PROP_FRAME_WIDTH, requested_width);
-                        camera.set(cv::CAP_PROP_FRAME_HEIGHT, requested_height);
-                        camera.set(cv::CAP_PROP_FPS, 30);
-                        generation = requested_generation;
+                } catch (const std::exception &error) {
+                    if (state->stop) break;
+                    if (previous_error != error.what()) {
+                        std::cerr << "Camera error: " << error.what() << "; retrying" << std::endl;
+                        previous_error = error.what();
                     }
-                    if (!physical_camera) {
-                        std::this_thread::sleep_until(next_frame);
-                        next_frame += std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1 / file_fps));
-                    }
-                    cv::Mat frame;
-                    if (!camera.read(frame) || frame.empty()) throw std::runtime_error("Camera read failed");
-                    double timestamp = now();
                     std::lock_guard<std::mutex> lock(state->mutex);
-                    state->latest.image = frame; state->latest.timestamp = timestamp;
-                    state->latest.generation = generation; ++state->latest.sequence;
+                    state->latest.error = error.what();
                 }
-            } catch (const std::exception &error) {
-                std::lock_guard<std::mutex> lock(state->mutex);
-                state->latest.error = error.what();
+                std::unique_lock<std::mutex> lock(state->mutex);
+                state->finished.wait_for(lock, std::chrono::seconds(2), [&] { return state->stop.load(); });
             }
             { std::lock_guard<std::mutex> lock(state->mutex); state->done = true; }
             state->finished.notify_all();
         });
     }
+
     ~Camera() {
         data->stop = true;
+        data->finished.notify_all();
         std::unique_lock<std::mutex> lock(data->mutex);
         bool finished = data->finished.wait_for(lock, std::chrono::milliseconds(250), [&] { return data->done; });
         lock.unlock();
@@ -246,7 +279,11 @@ int run(const Options &options) {
             auto requested_generation = camera->request_size(static_cast<int>(settings.camera_width), static_cast<int>(settings.camera_height));
             if (requested_generation != generation) { generation = requested_generation; size_started = now(); }
             Frame latest = camera->latest();
-            if (!latest.error.empty()) throw std::runtime_error(latest.error);
+            if (!latest.error.empty()) {
+                stop_for_camera("camera error", true);
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
             double current = now();
             if (latest.generation != generation && latest.sequence) {
                 stop_for_camera(current - size_started > 5 ? "camera timeout" : "camera reconfiguring", current - size_started > 5);
