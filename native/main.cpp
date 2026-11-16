@@ -17,8 +17,8 @@ struct Options {
     Settings settings;
     std::string camera = "auto", config = "pulveris.json", host = "0.0.0.0", token = ".web-token";
     int frequency = 100, port = 8080, enable_pin = 5, tape_pin = 7, error_led_pin = 23;
-    std::array<int, 4> pins{11, 13, 15, 12};
-    std::array<int, 2> inputs{22, 3}, led_pins{21, 19};
+    std::array<int, 4> pins{15, 12, 11, 13};
+    std::array<int, 2> inputs{3, 22}, led_pins{21, 19};
     bool web = false, dry_run = false, dry_inputs = false;
 };
 
@@ -269,7 +269,7 @@ int run(const Options &options) {
                 if (motors) motors->drive(0, 0);
                 if (leds) leds->set(false, false, false);
                 motion.stop(); pid.reset(); previous_time.reset(); filtered.reset(); error.reset();
-                target = {0, 0}; turn = 0;
+                target = {0, 0}; turn = 0; last_sequence = 0;
             }
             previous_polarity = settings.light_line;
             if (control.mode != previous_mode) {

@@ -2,6 +2,7 @@
 """Verify the controller recovers when a camera source appears after startup."""
 
 import pathlib
+import re
 import subprocess
 import tempfile
 import time
@@ -34,7 +35,18 @@ with tempfile.TemporaryDirectory(prefix="pulveris-camera-test-") as directory:
             for frame in range(60):
                 (root / f"frame{frame:03}.ppm").write_bytes(image)
             wait_for(log, "Camera reconnected:", process)
-            wait_for(log, "mode=", process)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                output_text = log.read_text(errors="replace")
+                commands = re.findall(r"mode=forward error=lost turn=0 left=([0-9.]+) right=([0-9.]+)", output_text)
+                if any(float(left) > 0 and float(right) > 0 for left, right in commands):
+                    break
+                if process.poll() is not None:
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError(f"No forward motion without a line:\n{output_text}")
+            assert any(float(left) > 0 and float(right) > 0 for left, right in commands), output_text
         finally:
             process.terminate()
             try:
@@ -43,4 +55,4 @@ with tempfile.TemporaryDirectory(prefix="pulveris-camera-test-") as directory:
                 process.kill()
                 process.wait()
 
-print("Camera recovery test passed")
+print("Camera recovery and no-line forward test passed")

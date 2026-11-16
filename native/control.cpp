@@ -51,13 +51,14 @@ double PID::update(double error, double dt, const Settings &settings) {
 
 std::pair<double, double> Motion::physical(bool forward, bool backward, bool visible,
                                             std::pair<double, double> target, const Settings &settings, double dt) {
-    if ((forward && backward) || (forward && !visible)) { stop(); return {left, right}; }
+    if (forward && backward) { stop(); return {left, right}; }
     int requested = static_cast<int>(forward) - static_cast<int>(backward);
     if (requested && requested != direction && (left || right)) {
         target = {0, 0};
     } else {
         if (requested) direction = requested;
         if (!forward) target = backward ? std::make_pair(-settings.speed, -settings.speed) : std::make_pair(0.0, 0.0);
+        else if (!visible) target = {settings.speed, settings.speed};
     }
     double delta = settings.ramp_rate * clamp(dt, 0, .1);
     left += clamp(target.first - left, -delta, delta);

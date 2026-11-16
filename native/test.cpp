@@ -89,6 +89,11 @@ int main(int argc, char **argv) {
     settings.speed = .5; settings.ramp_rate = 1;
     assert(motion.physical(true, false, true, {.5, .5}, settings, .1).first == .1);
     assert(motion.physical(true, true, true, {.5, .5}, settings, .1).first == 0);
+    auto no_line = motion.physical(true, false, false, {0, 0}, settings, .1);
+    assert(no_line.first == .1 && no_line.second == .1);
+    auto reacquired = motion.physical(true, false, true, {.5, 0}, settings, .1);
+    assert(reacquired.first == .2 && reacquired.second == 0);
+    assert(motion.physical(true, true, false, {0, 0}, settings, .1).first == 0);
     assert(motion.remote("forward", settings, .1).first == .1);
     assert(motion.remote("stop", settings, .1).first == 0);
     std::cout << "Native vision, PID, motion and stop tests passed\n";
