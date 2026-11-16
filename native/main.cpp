@@ -249,10 +249,16 @@ int run(const Options &options) {
         std::uint64_t generation = 1;
         double size_started = started;
         std::deque<double> frame_times;
+        auto stop_motion = [&] {
+            double stopped = now();
+            motion.advance(stopped - last_update);
+            last_update = stopped;
+            motion.stop();
+        };
         auto stop_for_camera = [&](const char *mode, bool camera_error = false) {
             if (motors) motors->drive(0, 0);
             if (leds) leds->set(false, false, camera_error);
-            motion.stop(); pid.reset(); previous_time.reset(); filtered.reset(); error.reset();
+            stop_motion(); pid.reset(); previous_time.reset(); filtered.reset(); error.reset();
             target = {0, 0}; turn = 0; frame_times.clear();
             if (server) {
                 std::lock_guard<std::mutex> lock(shared.mutex);
@@ -268,13 +274,14 @@ int run(const Options &options) {
             if (previous_polarity && *previous_polarity != settings.light_line) {
                 if (motors) motors->drive(0, 0);
                 if (leds) leds->set(false, false, false);
-                motion.stop(); pid.reset(); previous_time.reset(); filtered.reset(); error.reset();
+                stop_motion(); pid.reset(); previous_time.reset(); filtered.reset(); error.reset();
                 target = {0, 0}; turn = 0; last_sequence = 0;
             }
             previous_polarity = settings.light_line;
             if (control.mode != previous_mode) {
                 if (motors) motors->drive(0, 0);
-                motion.stop(); pid.reset(); previous_time.reset(); filtered.reset(); previous_mode = control.mode;
+                stop_motion(); pid.reset(); previous_time.reset(); filtered.reset(); previous_mode = control.mode;
+                if (control.mode == "remote") motion.path.clear();
             }
             auto requested_generation = camera->request_size(static_cast<int>(settings.camera_width), static_cast<int>(settings.camera_height));
             if (requested_generation != generation) { generation = requested_generation; size_started = now(); }
@@ -327,7 +334,7 @@ int run(const Options &options) {
             auto updated = snapshot(shared);
             if (updated.mode != control.mode) {
                 if (motors) motors->drive(0, 0);
-                motion.stop();
+                stop_motion();
                 continue;
             }
             if (!fresh && update_time - last_update < .01) {

@@ -61,8 +61,11 @@ struct PID {
 };
 
 struct Motion {
+    struct Segment { double left, right, duration; };
     double left = 0, right = 0;
     int direction = 0;
+    std::deque<Segment> path;
+    void advance(double dt);
     void stop() { left = right = 0; direction = 0; }
     std::pair<double, double> physical(bool forward, bool backward, bool visible,
                                        std::pair<double, double> target, const Settings &settings, double dt);

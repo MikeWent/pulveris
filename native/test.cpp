@@ -96,5 +96,30 @@ int main(int argc, char **argv) {
     assert(motion.physical(true, true, false, {0, 0}, settings, .1).first == 0);
     assert(motion.remote("forward", settings, .1).first == .1);
     assert(motion.remote("stop", settings, .1).first == 0);
+
+    Motion route;
+    settings.ramp_rate = 10;
+    Motion empty_route;
+    settings.ramp_rate = 1;
+    assert(empty_route.physical(false, true, true, {}, settings, .1) == std::make_pair(-.1, -.1));
+    assert(empty_route.physical(false, false, true, {}, settings, .1) == std::make_pair(0.0, 0.0));
+    settings.ramp_rate = 10;
+    route.physical(true, false, true, {.4, .2}, settings, .1);
+    route.physical(true, false, true, {.2, .4}, settings, .1);
+    route.physical(false, false, true, {}, settings, .1);
+    auto reverse = route.physical(false, true, true, {}, settings, .1);
+    assert(reverse.first == -.2 && reverse.second == -.4);
+    reverse = route.physical(false, true, true, {}, settings, .04);
+    assert(reverse.first == -.2 && reverse.second == -.4);
+    assert(route.physical(false, false, true, {}, settings, .02) == std::make_pair(0.0, 0.0));
+    reverse = route.physical(false, true, true, {}, settings, .1);
+    assert(reverse.first == -.2 && reverse.second == -.4);
+    reverse = route.physical(false, true, true, {}, settings, .05);
+    assert(reverse.first == -.4 && reverse.second == -.2);
+    assert(route.physical(false, true, true, {}, settings, .11) == std::make_pair(-.5, -.5));
+    route.physical(true, false, true, {.3, .3}, settings, .1);
+    route.physical(false, false, true, {}, settings, .1);
+    route.remote("stop", settings, .1);
+    assert(route.physical(false, true, true, {}, settings, .1) == std::make_pair(-.5, -.5));
     std::cout << "Native vision, PID, motion and stop tests passed\n";
 }

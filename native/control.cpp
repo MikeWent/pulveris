@@ -49,15 +49,39 @@ double PID::update(double error, double dt, const Settings &settings) {
     return clamp(settings.kp * error + settings.ki * integral + settings.kd * derivative, -1, 1);
 }
 
+void Motion::advance(double dt) {
+    if (dt <= 0 || (!left && !right)) return;
+    if (direction == 1) {
+        if (!path.empty() && path.back().left == left && path.back().right == right)
+            path.back().duration += dt;
+        else {
+            path.push_back({left, right, dt});
+            // ponytail: keep 60,000 commands; use odometry and persistent storage for longer routes.
+            if (path.size() > 60000) path.pop_front();
+        }
+    } else if (direction == -1 && !path.empty()) {
+        path.back().duration -= dt;
+        if (path.back().duration <= 0) path.pop_back();
+    }
+}
+
 std::pair<double, double> Motion::physical(bool forward, bool backward, bool visible,
                                             std::pair<double, double> target, const Settings &settings, double dt) {
+    advance(dt);
     if (forward && backward) { stop(); return {left, right}; }
     int requested = static_cast<int>(forward) - static_cast<int>(backward);
+    // Stopping replay immediately avoids adding an unrecorded reverse ramp.
+    if (direction == -1 && requested != -1) stop();
     if (requested && requested != direction && (left || right)) {
         target = {0, 0};
     } else {
         if (requested) direction = requested;
-        if (!forward) target = backward ? std::make_pair(-settings.speed, -settings.speed) : std::make_pair(0.0, 0.0);
+        if (backward && !path.empty()) {
+            left = -path.back().left; right = -path.back().right;
+            return {left, right};
+        }
+        if (backward) target = {-settings.speed, -settings.speed};
+        else if (!forward) target = {0, 0};
         else if (!visible) target = {settings.speed, settings.speed};
     }
     double delta = settings.ramp_rate * clamp(dt, 0, .1);
@@ -67,6 +91,7 @@ std::pair<double, double> Motion::physical(bool forward, bool backward, bool vis
 }
 
 std::pair<double, double> Motion::remote(const std::string &command, const Settings &settings, double dt) {
+    path.clear();
     if (command == "stop") { stop(); return {left, right}; }
     std::pair<double, double> target;
     if (command == "forward") target = {settings.speed, settings.speed};
